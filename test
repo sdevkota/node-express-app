@@ -1,0 +1,382 @@
+import time
+import requests
+from typing import Optional, Dict, Any, List
+from utils.logger import get_logger
+import json
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class WebUIClient:
+    """Enhanced Web API Client with source extraction capabilities"""
+    
+    def __init__(self, base_url: str = "http://localhost", model: str = "gemma3:4b"):
+        self.logger = get_logger(__name__)
+        self.api_key = os.getenv("WEBUI_API_KEY")
+        self.base_url = (os.getenv("WEBUI_API_URL") or base_url).rstrip("/")
+        self.collection = os.getenv("COLLECTION")
+        self.model = os.getenv("LLM_MODEL") or model
+        self.session = requests.Session()
+        
+        # Validate configuration
+        self._validate_config()
+        
+        # Set up session headers
+        if self.api_key:
+            self.session.headers.update({
+                'Authorization': f'Bearer {self.api_key}',
+                "Content-Type": "application/json"
+            })
+        else:
+            self.logger.error("❌ WEBUI_API_KEY is required")
+            raise ValueError("WEBUI_API_KEY environment variable is required")
+    
+    def _validate_config(self) -> None:
+        """Validate client configuration"""
+        if not self.collection:
+            self.logger.warning("⚠️ No collection specified - API calls will require collection parameter")
+        
+        self.logger.info(f"🔧 WebUI Client configured:")
+        self.logger.info(f"   Base URL: {self.base_url}")
+        self.logger.info(f"   Model: {self.model}")
+        self.logger.info(f"   Collection: {self.collection or 'None'}")
+    
+    def generate_response(self, prompt: str = "Summarize the document", 
+                         collection: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Generate AI response with source extraction
+        
+        Args:
+            prompt: The prompt to send to the AI
+            collection: Optional collection ID (overrides default)
+            
+        Returns:
+            Dict containing content, sources, and metadata
+        """
+        try:
+            self.logger.info(f"📝 Sending prompt: `{prompt[:100]}{'...' if len(prompt) > 100 else ''}`")
+            start_time = time.time()
+            
+            # Use provided collection or default
+            target_collection = collection or self.collection
+            if not target_collection:
+                raise ValueError("Collection is required - provide via parameter or COLLECTION env variable")
+            
+            # Prepare payload
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "files": [{"type": "collection", "id": target_collection}]
+            }
+            
+            self.logger.debug(f"🔄 Sending request to: {self.base_url}/api/chat/completions")
+            
+            # Make API call
+            response = self.session.post(
+                f"{self.base_url}/api/chat/completions", 
+                json=payload,
+                timeout=60  # Add timeout
+            )
+            
+            elapsed_time = time.time() - start_time
+            
+            # Handle response
+            if response.status_code == 200:
+                result = response.json()
+                extracted_data = self._extract_response(result)
+                
+                # Add metadata
+                extracted_data.update({
+                    'status': 'success',
+                    'response_time': elapsed_time,
+                    'model_used': self.model,
+                    'collection_used': target_collection,
+                    'timestamp': time.time()
+                })
+                
+                self.logger.info(f"✅ API call completed in {elapsed_time:.2f} seconds")
+                self.logger.info(f"📄 Content length: {len(extracted_data['content'])} characters")
+                self.logger.info(f"🔗 Sources found: {len(extracted_data['sources'])}")
+                
+                return extracted_data
+            else:
+                error_msg = f"API request failed with status {response.status_code}: {response.text}"
+                self.logger.error(f"❌ {error_msg}")
+                return {
+                    'content': f"[ERROR: API request failed - {response.status_code}]",
+                    'sources': [],
+                    'status': 'error',
+                    'error': error_msg,
+                    'response_time': elapsed_time
+                }
+                
+        except requests.exceptions.Timeout:
+            error_msg = "API request timed out"
+            self.logger.error(f"❌ {error_msg}")
+            return {
+                'content': f"[ERROR: {error_msg}]",
+                'sources': [],
+                'status': 'error',
+                'error': error_msg
+            }
+        except requests.exceptions.ConnectionError:
+            error_msg = f"Failed to connect to {self.base_url}"
+            self.logger.error(f"❌ {error_msg}")
+            return {
+                'content': f"[ERROR: {error_msg}]",
+                'sources': [],
+                'status': 'error',
+                'error': error_msg
+            }
+        except Exception as e:
+            error_msg = f"Response generation failed: {str(e)}"
+            self.logger.error(f"❌ {error_msg}")
+            return {
+                'content': f"[ERROR: {error_msg}]",
+                'sources': [],
+                'status': 'error',
+                'error': error_msg
+            }
+
+    def _extract_response(self, response_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract content and sources from various OpenWebUI response formats"""
+        try:
+            content = ""
+            sources = []
+            
+            # OpenAI-style response
+            if 'choices' in response_data and response_data['choices']:
+                choice = response_data['choices'][0]
+                if 'message' in choice and 'content' in choice['message']:
+                    content = choice['message']['content'].strip()
+                elif 'text' in choice:
+                    content = choice['text'].strip()
+                    
+            # Direct response format
+            elif 'response' in response_data:
+                content = response_data['response'].strip()
+                
+            # Content field
+            elif 'content' in response_data:
+                content = response_data['content'].strip()
+                
+            # Message format
+            elif 'message' in response_data:
+                if isinstance(response_data['message'], str):
+                    content = response_data['message'].strip()
+                elif isinstance(response_data['message'], dict) and 'content' in response_data['message']:
+                    content = response_data['message']['content'].strip()
+            
+            # Extract sources from various possible locations
+            sources = self._extract_sources(response_data)
+            
+            # Fallback - convert entire response to string if no content found
+            if not content:
+                self.logger.warning("⚠️ Unknown response format, using raw response")
+                content = str(response_data).strip()
+                
+            return {
+                'content': content,
+                'sources': sources,
+                'raw_response': response_data  # Keep original for debugging
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to extract response content: {e}")
+            return {
+                'content': "[ERROR: Failed to parse API response]",
+                'sources': [],
+                'raw_response': response_data
+            }
+
+    def _extract_sources(self, response_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract source links from response data"""
+        sources = []
+        
+        try:
+            # Common source field locations in OpenWebUI responses
+            source_fields = [
+                'sources', 'citations', 'references', 'links',
+                'source_documents', 'source_links', 'metadata'
+            ]
+            
+            # Check top-level fields
+            for field in source_fields:
+                if field in response_data:
+                    sources.extend(self._parse_source_field(response_data[field]))
+            
+            # Check nested in choices (OpenAI format)
+            if 'choices' in response_data:
+                for choice in response_data['choices']:
+                    if 'message' in choice:
+                        message = choice['message']
+                        for field in source_fields:
+                            if field in message:
+                                sources.extend(self._parse_source_field(message[field]))
+                    
+                    # Check for function calls or tool calls that might contain sources
+                    if 'function_call' in choice or 'tool_calls' in choice:
+                        function_data = choice.get('function_call') or choice.get('tool_calls', [])
+                        sources.extend(self._extract_sources_from_functions(function_data))
+            
+            # Check for RAG-specific fields
+            if 'context' in response_data or 'retrieved_docs' in response_data:
+                context_data = response_data.get('context') or response_data.get('retrieved_docs')
+                sources.extend(self._parse_source_field(context_data))
+                
+            # Remove duplicates while preserving order
+            unique_sources = self._deduplicate_sources(sources)
+            
+            if unique_sources:
+                self.logger.debug(f"🔍 Extracted {len(unique_sources)} unique sources")
+                
+            return unique_sources
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to extract sources: {e}")
+            return []
+
+    def _parse_source_field(self, source_field: Any) -> List[Dict[str, Any]]:
+        """Parse various source field formats"""
+        sources = []
+        
+        if not source_field:
+            return sources
+            
+        try:
+            # Handle list of sources
+            if isinstance(source_field, list):
+                for item in source_field:
+                    if isinstance(item, dict):
+                        # Standard source object
+                        source = {
+                            'title': item.get('title', ''),
+                            'url': item.get('url', '') or item.get('link', '') or item.get('source', ''),
+                            'snippet': item.get('snippet', '') or item.get('content', '') or item.get('text', ''),
+                            'score': item.get('score', 0) or item.get('relevance', 0)
+                        }
+                        if source['url'] or source['title']:
+                            sources.append(source)
+                    elif isinstance(item, str):
+                        # Simple URL string
+                        sources.append({
+                            'url': item, 
+                            'title': '', 
+                            'snippet': '', 
+                            'score': 0
+                        })
+            
+            # Handle single source object
+            elif isinstance(source_field, dict):
+                source = {
+                    'title': source_field.get('title', ''),
+                    'url': source_field.get('url', '') or source_field.get('link', '') or source_field.get('source', ''),
+                    'snippet': source_field.get('snippet', '') or source_field.get('content', '') or source_field.get('text', ''),
+                    'score': source_field.get('score', 0) or source_field.get('relevance', 0)
+                }
+                if source['url'] or source['title']:
+                    sources.append(source)
+            
+            # Handle string (single URL)
+            elif isinstance(source_field, str) and (source_field.startswith('http') or source_field.startswith('www')):
+                sources.append({
+                    'url': source_field, 
+                    'title': '', 
+                    'snippet': '', 
+                    'score': 0
+                })
+                
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse source field: {e}")
+            
+        return sources
+
+    def _extract_sources_from_functions(self, function_data: Any) -> List[Dict[str, Any]]:
+        """Extract sources from function/tool call responses"""
+        sources = []
+        
+        try:
+            if isinstance(function_data, list):
+                for func in function_data:
+                    if 'function' in func and 'arguments' in func['function']:
+                        args = func['function']['arguments']
+                        if isinstance(args, str):
+                            args = json.loads(args)
+                        if 'sources' in args:
+                            sources.extend(self._parse_source_field(args['sources']))
+            elif isinstance(function_data, dict):
+                if 'arguments' in function_data:
+                    args = function_data['arguments']
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    if 'sources' in args:
+                        sources.extend(self._parse_source_field(args['sources']))
+                        
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to extract sources from functions: {e}")
+            
+        return sources
+
+    def _deduplicate_sources(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove duplicate sources while preserving order"""
+        seen = set()
+        unique_sources = []
+        
+        for source in sources:
+            # Create a unique key for deduplication
+            key = source.get('url', '') or source.get('title', '') or str(source)
+            if key and key not in seen:
+                seen.add(key)
+                unique_sources.append(source)
+                
+        return unique_sources
+
+    def get_formatted_sources(self, sources: List[Dict[str, Any]]) -> List[str]:
+        """Format sources for display"""
+        formatted_sources = []
+        
+        for i, source in enumerate(sources, 1):
+            formatted_source = f"{i}. "
+            if source['title']:
+                formatted_source += f"{source['title']}"
+            if source['url']:
+                formatted_source += f" - {source['url']}"
+            if source['snippet']:
+                formatted_source += f"\n   {source['snippet'][:100]}..."
+            formatted_sources.append(formatted_source)
+            
+        return formatted_sources
+
+    def test_connection(self) -> bool:
+        """Test API connection"""
+        try:
+            response = self.session.get(f"{self.base_url}/api/models", timeout=10)
+            if response.status_code == 200:
+                self.logger.info("✅ API connection successful")
+                return True
+            else:
+                self.logger.error(f"❌ API connection failed: {response.status_code}")
+                return False
+        except Exception as e:
+            self.logger.error(f"❌ Connection test failed: {e}")
+            return False
+
+
+# Example usage
+if __name__ == "__main__":
+    client = WebUIClient()
+    
+    # Test connection
+    if client.test_connection():
+        # Generate response
+        result = client.generate_response("What are the main topics discussed in the documents?")
+        
+        print(f"Content: {result['content'][:200]}...")
+        print(f"Sources found: {len(result['sources'])}")
+        
+        if result['sources']:
+            print("\nFormatted sources:")
+            for source in client.get_formatted_sources(result['sources']):
+                print(source)
