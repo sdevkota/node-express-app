@@ -30,15 +30,15 @@ class WebUIClient:
                 "Content-Type": "application/json"
             })
         else:
-            self.logger.error("❌ WEBUI_API_KEY is required")
+            self.logger.error("WEBUI_API_KEY is required")
             raise ValueError("WEBUI_API_KEY environment variable is required")
     
     def _validate_config(self) -> None:
         """Validate client configuration"""
         if not self.collection:
-            self.logger.warning("⚠️ No collection specified - API calls will require collection parameter")
+            self.logger.warning("No collection specified - API calls will require collection parameter")
         
-        self.logger.info(f"🔧 WebUI Client configured:")
+        self.logger.info(f"WebUI Client configured:")
         self.logger.info(f"   Base URL: {self.base_url}")
         self.logger.info(f"   Model: {self.model}")
         self.logger.info(f"   Collection: {self.collection or 'None'}")
@@ -56,7 +56,7 @@ class WebUIClient:
             Dict containing content, sources, and metadata
         """
         try:
-            self.logger.info(f"📝 Sending prompt: `{prompt[:100]}{'...' if len(prompt) > 100 else ''}`")
+            self.logger.info(f"Sending prompt: `{prompt[:100]}{'...' if len(prompt) > 100 else ''}`")
             start_time = time.time()
             
             # Use provided collection or default
@@ -71,7 +71,7 @@ class WebUIClient:
                 "files": [{"type": "collection", "id": target_collection}]
             }
             
-            self.logger.debug(f"🔄 Sending request to: {self.base_url}/api/chat/completions")
+            self.logger.debug(f"Sending request to: {self.base_url}/api/chat/completions")
             
             # Make API call
             response = self.session.post(
@@ -96,14 +96,14 @@ class WebUIClient:
                     'timestamp': time.time()
                 })
                 
-                self.logger.info(f"✅ API call completed in {elapsed_time:.2f} seconds")
-                self.logger.info(f"📄 Content length: {len(extracted_data['content'])} characters")
-                self.logger.info(f"🔗 Sources found: {len(extracted_data['sources'])}")
+                self.logger.info(f"API call completed in {elapsed_time:.2f} seconds")
+                self.logger.info(f"Content length: {len(extracted_data['content'])} characters")
+                self.logger.info(f"Sources found: {len(extracted_data['sources'])}")
                 
                 return extracted_data
             else:
                 error_msg = f"API request failed with status {response.status_code}: {response.text}"
-                self.logger.error(f"❌ {error_msg}")
+                self.logger.error(f"{error_msg}")
                 return {
                     'content': f"[ERROR: API request failed - {response.status_code}]",
                     'sources': [],
@@ -114,7 +114,7 @@ class WebUIClient:
                 
         except requests.exceptions.Timeout:
             error_msg = "API request timed out"
-            self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"{error_msg}")
             return {
                 'content': f"[ERROR: {error_msg}]",
                 'sources': [],
@@ -123,7 +123,7 @@ class WebUIClient:
             }
         except requests.exceptions.ConnectionError:
             error_msg = f"Failed to connect to {self.base_url}"
-            self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"{error_msg}")
             return {
                 'content': f"[ERROR: {error_msg}]",
                 'sources': [],
@@ -132,7 +132,7 @@ class WebUIClient:
             }
         except Exception as e:
             error_msg = f"Response generation failed: {str(e)}"
-            self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"{error_msg}")
             return {
                 'content': f"[ERROR: {error_msg}]",
                 'sources': [],
@@ -174,7 +174,7 @@ class WebUIClient:
             
             # Fallback - convert entire response to string if no content found
             if not content:
-                self.logger.warning("⚠️ Unknown response format, using raw response")
+                self.logger.warning("Unknown response format, using raw response")
                 content = str(response_data).strip()
                 
             return {
@@ -184,7 +184,7 @@ class WebUIClient:
             }
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to extract response content: {e}")
+            self.logger.error(f"Failed to extract response content: {e}")
             return {
                 'content': "[ERROR: Failed to parse API response]",
                 'sources': [],
@@ -234,12 +234,12 @@ class WebUIClient:
             unique_sources = self._deduplicate_sources(sources)
             
             if unique_sources:
-                self.logger.debug(f"🔍 Extracted {len(unique_sources)} unique sources")
+                self.logger.debug(f"Extracted {len(unique_sources)} unique sources")
                 
             return unique_sources
             
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to extract sources: {e}")
+            self.logger.warning(f"Failed to extract sources: {e}")
             self.logger.debug(f"Debug - Response keys: {list(response_data.keys())}")
             return []
 
@@ -248,7 +248,57 @@ class WebUIClient:
         sources = []
         
         if not source_field:
-        def _parse_openwebui_sources(self, sources_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return sources
+            
+        try:
+            # Handle list of sources
+            if isinstance(source_field, list):
+                for item in source_field:
+                    if isinstance(item, dict):
+                        # Standard source object
+                        source = {
+                            'title': item.get('title', ''),
+                            'url': item.get('url', '') or item.get('link', '') or item.get('source', ''),
+                            'snippet': item.get('snippet', '') or item.get('content', '') or item.get('text', ''),
+                            'score': item.get('score', 0) or item.get('relevance', 0)
+                        }
+                        if source['url'] or source['title']:
+                            sources.append(source)
+                    elif isinstance(item, str):
+                        # Simple URL string
+                        sources.append({
+                            'url': item, 
+                            'title': '', 
+                            'snippet': '', 
+                            'score': 0
+                        })
+            
+            # Handle single source object
+            elif isinstance(source_field, dict):
+                source = {
+                    'title': source_field.get('title', ''),
+                    'url': source_field.get('url', '') or source_field.get('link', '') or source_field.get('source', ''),
+                    'snippet': source_field.get('snippet', '') or source_field.get('content', '') or source_field.get('text', ''),
+                    'score': source_field.get('score', 0) or source_field.get('relevance', 0)
+                }
+                if source['url'] or source['title']:
+                    sources.append(source)
+            
+            # Handle string (single URL)
+            elif isinstance(source_field, str) and (source_field.startswith('http') or source_field.startswith('www')):
+                sources.append({
+                    'url': source_field, 
+                    'title': '', 
+                    'snippet': '', 
+                    'score': 0
+                })
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to parse source field: {e}")
+            
+        return sources
+
+    def _parse_openwebui_sources(self, sources_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Parse OpenWebUI specific sources format"""
         parsed_sources = []
         
@@ -306,57 +356,9 @@ class WebUIClient:
                         parsed_sources.append(parsed_source)
                         
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse OpenWebUI sources: {e}")
+            self.logger.warning(f"Failed to parse OpenWebUI sources: {e}")
             
         return parsed_sources
-            
-        try:
-            # Handle list of sources
-            if isinstance(source_field, list):
-                for item in source_field:
-                    if isinstance(item, dict):
-                        # Standard source object
-                        source = {
-                            'title': item.get('title', ''),
-                            'url': item.get('url', '') or item.get('link', '') or item.get('source', ''),
-                            'snippet': item.get('snippet', '') or item.get('content', '') or item.get('text', ''),
-                            'score': item.get('score', 0) or item.get('relevance', 0)
-                        }
-                        if source['url'] or source['title']:
-                            sources.append(source)
-                    elif isinstance(item, str):
-                        # Simple URL string
-                        sources.append({
-                            'url': item, 
-                            'title': '', 
-                            'snippet': '', 
-                            'score': 0
-                        })
-            
-            # Handle single source object
-            elif isinstance(source_field, dict):
-                source = {
-                    'title': source_field.get('title', ''),
-                    'url': source_field.get('url', '') or source_field.get('link', '') or source_field.get('source', ''),
-                    'snippet': source_field.get('snippet', '') or source_field.get('content', '') or source_field.get('text', ''),
-                    'score': source_field.get('score', 0) or source_field.get('relevance', 0)
-                }
-                if source['url'] or source['title']:
-                    sources.append(source)
-            
-            # Handle string (single URL)
-            elif isinstance(source_field, str) and (source_field.startswith('http') or source_field.startswith('www')):
-                sources.append({
-                    'url': source_field, 
-                    'title': '', 
-                    'snippet': '', 
-                    'score': 0
-                })
-                
-        except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse source field: {e}")
-            
-        return sources
 
     def _extract_sources_from_functions(self, function_data: Any) -> List[Dict[str, Any]]:
         """Extract sources from function/tool call responses"""
@@ -380,7 +382,7 @@ class WebUIClient:
                         sources.extend(self._parse_source_field(args['sources']))
                         
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to extract sources from functions: {e}")
+            self.logger.warning(f"Failed to extract sources from functions: {e}")
             
         return sources
 
@@ -437,16 +439,16 @@ class WebUIClient:
             
             # URL or handle
             if source.get('url'):
-                formatted_parts.append(f"\n   🔗 {source['url']}")
+                formatted_parts.append(f"\n   {source['url']}")
             
             # Snippet
             if source.get('snippet'):
                 snippet = source['snippet'][:200] + "..." if len(source['snippet']) > 200 else source['snippet']
-                formatted_parts.append(f"\n   📄 {snippet}")
+                formatted_parts.append(f"\n   {snippet}")
             
             # Relevance score
             if source.get('score', 0) > 0:
-                formatted_parts.append(f"\n   📊 Relevance: {source['score']:.3f}")
+                formatted_parts.append(f"\n   Relevance: {source['score']:.3f}")
             
             formatted_sources.append(" ".join(formatted_parts))
             
@@ -457,13 +459,13 @@ class WebUIClient:
         try:
             response = self.session.get(f"{self.base_url}/api/models", timeout=10)
             if response.status_code == 200:
-                self.logger.info("✅ API connection successful")
+                self.logger.info("API connection successful")
                 return True
             else:
-                self.logger.error(f"❌ API connection failed: {response.status_code}")
+                self.logger.error(f"API connection failed: {response.status_code}")
                 return False
         except Exception as e:
-            self.logger.error(f"❌ Connection test failed: {e}")
+            self.logger.error(f"Connection test failed: {e}")
             return False
 
 
