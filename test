@@ -196,9 +196,13 @@ class WebUIClient:
         sources = []
         
         try:
-            # Common source field locations in OpenWebUI responses
+            # Check top-level 'sources' field first (OpenWebUI specific)
+            if 'sources' in response_data:
+                sources.extend(self._parse_openwebui_sources(response_data['sources']))
+            
+            # Common source field locations in other OpenWebUI responses
             source_fields = [
-                'sources', 'citations', 'references', 'links',
+                'citations', 'references', 'links',
                 'source_documents', 'source_links', 'metadata'
             ]
             
@@ -236,6 +240,7 @@ class WebUIClient:
             
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to extract sources: {e}")
+            self.logger.debug(f"Debug - Response keys: {list(response_data.keys())}")
             return []
 
     def _parse_source_field(self, source_field: Any) -> List[Dict[str, Any]]:
@@ -243,7 +248,67 @@ class WebUIClient:
         sources = []
         
         if not source_field:
-            return sources
+        def _parse_openwebui_sources(self, sources_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Parse OpenWebUI specific sources format"""
+        parsed_sources = []
+        
+        try:
+            for source_item in sources_data:
+                if not isinstance(source_item, dict):
+                    continue
+                    
+                # Extract collection info
+                source_info = source_item.get('source', {})
+                collection_id = source_info.get('id', '') if source_info else ''
+                collection_type = source_info.get('type', '') if source_info else ''
+                
+                # Extract documents (text snippets)
+                documents = source_item.get('document', [])
+                if not isinstance(documents, list):
+                    documents = [documents] if documents else []
+                
+                # Extract metadata for each document
+                metadata_list = source_item.get('metadata', [])
+                if not isinstance(metadata_list, list):
+                    metadata_list = [metadata_list] if metadata_list else []
+                
+                # Extract distances (relevance scores)
+                distances = source_item.get('distances', [])
+                if not isinstance(distances, list):
+                    distances = [distances] if distances else []
+                
+                # Process each document with its metadata
+                for i, doc_text in enumerate(documents):
+                    metadata = metadata_list[i] if i < len(metadata_list) else {}
+                    distance = distances[i] if i < len(distances) else 0
+                    
+                    # Extract meaningful information from metadata
+                    title = metadata.get('title', '') or metadata.get('ti', '') or metadata.get('name', '')
+                    author = metadata.get('author', '') or metadata.get('au', '')
+                    source_url = metadata.get('url', '') or metadata.get('hdl', '')
+                    page_info = f"Page {metadata.get('page', '')}" if metadata.get('page') else ''
+                    
+                    # Create formatted source entry
+                    parsed_source = {
+                        'title': title,
+                        'url': source_url,
+                        'snippet': str(doc_text)[:300] + "..." if len(str(doc_text)) > 300 else str(doc_text),
+                        'score': 1 - distance if distance else 0,  # Convert distance to similarity score
+                        'author': author,
+                        'page': page_info,
+                        'collection_id': collection_id,
+                        'collection_type': collection_type,
+                        'metadata': metadata  # Keep full metadata for reference
+                    }
+                    
+                    # Only add if we have meaningful content
+                    if parsed_source['title'] or parsed_source['snippet'] or parsed_source['url']:
+                        parsed_sources.append(parsed_source)
+                        
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse OpenWebUI sources: {e}")
+            
+        return parsed_sources
             
         try:
             # Handle list of sources
@@ -325,10 +390,28 @@ class WebUIClient:
         unique_sources = []
         
         for source in sources:
-            # Create a unique key for deduplication
-            key = source.get('url', '') or source.get('title', '') or str(source)
-            if key and key not in seen:
-                seen.add(key)
+            # Create a unique key for deduplication - handle nested dicts properly
+            try:
+                key_parts = []
+                if source.get('url'):
+                    key_parts.append(f"url:{source['url']}")
+                if source.get('title'):
+                    key_parts.append(f"title:{source['title']}")
+                if source.get('collection_id'):
+                    key_parts.append(f"collection:{source['collection_id']}")
+                if source.get('page'):
+                    key_parts.append(f"page:{source['page']}")
+                
+                # Create a hashable key
+                key = "|".join(key_parts) if key_parts else str(hash(str(source)))
+                
+                if key and key not in seen:
+                    seen.add(key)
+                    unique_sources.append(source)
+                    
+            except Exception as e:
+                self.logger.debug(f"Warning: Could not deduplicate source - {e}")
+                # If deduplication fails, still add the source
                 unique_sources.append(source)
                 
         return unique_sources
@@ -338,14 +421,34 @@ class WebUIClient:
         formatted_sources = []
         
         for i, source in enumerate(sources, 1):
-            formatted_source = f"{i}. "
-            if source['title']:
-                formatted_source += f"{source['title']}"
-            if source['url']:
-                formatted_source += f" - {source['url']}"
-            if source['snippet']:
-                formatted_source += f"\n   {source['snippet'][:100]}..."
-            formatted_sources.append(formatted_source)
+            formatted_parts = [f"{i}."]
+            
+            # Title
+            if source.get('title'):
+                formatted_parts.append(f"**{source['title']}**")
+            
+            # Author
+            if source.get('author'):
+                formatted_parts.append(f"by {source['author']}")
+            
+            # Page information
+            if source.get('page'):
+                formatted_parts.append(f"({source['page']})")
+            
+            # URL or handle
+            if source.get('url'):
+                formatted_parts.append(f"\n   🔗 {source['url']}")
+            
+            # Snippet
+            if source.get('snippet'):
+                snippet = source['snippet'][:200] + "..." if len(source['snippet']) > 200 else source['snippet']
+                formatted_parts.append(f"\n   📄 {snippet}")
+            
+            # Relevance score
+            if source.get('score', 0) > 0:
+                formatted_parts.append(f"\n   📊 Relevance: {source['score']:.3f}")
+            
+            formatted_sources.append(" ".join(formatted_parts))
             
         return formatted_sources
 
